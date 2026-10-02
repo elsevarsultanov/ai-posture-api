@@ -8,37 +8,60 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
+// =====================================================
+// DEVICES
+// =====================================================
+
 const devices = {};
 
 function getDevice(deviceId) {
   if (!devices[deviceId]) {
     devices[deviceId] = {
       deviceId: deviceId,
+
       calibrated: false,
       normalPitch: null,
+
       warningAngle: 10,
       badAngle: 15,
       criticalAngle: 20,
-      status: "not_calibrated"
+
+      status: "not_calibrated",
+
+      calibrationRequested: false,
+
+      currentPitch: null,
+      deviation: null,
+
+      lastUpdate: null
     };
   }
 
   return devices[deviceId];
 }
 
-// TEST
+// =====================================================
+// HOME
+// =====================================================
+
 app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "AI Posture API",
-    version: "1.0.0"
+    version: "2.0.0"
   });
 });
 
-// ESP8266 bu endpoint-i çağırır
+// =====================================================
+// GET DEVICE
+// ESP8266 + AI STUDIO
+// =====================================================
+
 app.get("/api/device/:deviceId", (req, res) => {
 
-  const device = getDevice(req.params.deviceId);
+  const deviceId = req.params.deviceId;
+
+  const device = getDevice(deviceId);
 
   res.status(200).json({
     ok: true,
@@ -46,7 +69,40 @@ app.get("/api/device/:deviceId", (req, res) => {
   });
 });
 
-// Kalibrasiya
+// =====================================================
+// REQUEST CALIBRATION
+// AI STUDIO → RENDER
+// =====================================================
+
+app.post("/api/calibration/request", (req, res) => {
+
+  const { deviceId } = req.body;
+
+  if (!deviceId) {
+    return res.status(400).json({
+      ok: false,
+      error: "deviceId is required"
+    });
+  }
+
+  const device = getDevice(deviceId);
+
+  device.calibrationRequested = true;
+
+  device.status = "calibration_requested";
+
+  res.json({
+    ok: true,
+    message: "Calibration requested",
+    device: device
+  });
+});
+
+// =====================================================
+// SAVE CALIBRATION
+// ESP8266 → RENDER
+// =====================================================
+
 app.post("/api/calibration", (req, res) => {
 
   const {
@@ -54,27 +110,127 @@ app.post("/api/calibration", (req, res) => {
     normalPitch
   } = req.body;
 
-  if (!deviceId || typeof normalPitch !== "number") {
+  if (!deviceId) {
     return res.status(400).json({
       ok: false,
-      error: "deviceId ve normalPitch teleb olunur"
+      error: "deviceId is required"
+    });
+  }
+
+  if (
+    typeof normalPitch !== "number" ||
+    !Number.isFinite(normalPitch)
+  ) {
+    return res.status(400).json({
+      ok: false,
+      error: "normalPitch must be a valid number"
     });
   }
 
   const device = getDevice(deviceId);
 
-  device.calibrated = true;
   device.normalPitch = normalPitch;
-  device.status = "ready";
+
+  device.calibrated = true;
+
+  device.calibrationRequested = false;
+
+  device.status = "calibrated";
+
+  device.currentPitch = null;
+
+  device.deviation = null;
+
+  device.lastUpdate = new Date().toISOString();
 
   res.json({
     ok: true,
-    message: "Duzgun oturus yadda saxlanildi",
+    message: "Calibration saved",
     device: device
   });
 });
 
-// Parametrləri dəyiş
+// =====================================================
+// POSTURE UPDATE
+// ESP8266 → RENDER
+// =====================================================
+
+app.post("/api/posture", (req, res) => {
+
+  const {
+    deviceId,
+    currentPitch
+  } = req.body;
+
+  if (!deviceId) {
+    return res.status(400).json({
+      ok: false,
+      error: "deviceId is required"
+    });
+  }
+
+  if (
+    typeof currentPitch !== "number" ||
+    !Number.isFinite(currentPitch)
+  ) {
+    return res.status(400).json({
+      ok: false,
+      error: "currentPitch must be a valid number"
+    });
+  }
+
+  const device = getDevice(deviceId);
+
+  device.currentPitch = currentPitch;
+
+  device.lastUpdate = new Date().toISOString();
+
+  if (device.calibrated && device.normalPitch !== null) {
+
+    const deviation =
+      Math.abs(
+        currentPitch - device.normalPitch
+      );
+
+    device.deviation = deviation;
+
+    if (deviation < device.warningAngle) {
+
+      device.status = "good";
+
+    } else if (deviation < device.badAngle) {
+
+      device.status = "warning";
+
+    } else if (deviation < device.criticalAngle) {
+
+      device.status = "bad";
+
+    } else {
+
+      device.status = "critical";
+    }
+  }
+
+  res.json({
+    ok: true,
+
+    deviceId: deviceId,
+
+    currentPitch: device.currentPitch,
+
+    normalPitch: device.normalPitch,
+
+    deviation: device.deviation,
+
+    status: device.status
+  });
+});
+
+// =====================================================
+// SETTINGS
+// =====================================================
+
 app.post("/api/settings", (req, res) => {
 
   const {
@@ -87,94 +243,47 @@ app.post("/api/settings", (req, res) => {
   if (!deviceId) {
     return res.status(400).json({
       ok: false,
-      error: "deviceId teleb olunur"
+      error: "deviceId is required"
     });
   }
 
   const device = getDevice(deviceId);
 
-  if (typeof warningAngle === "number") {
+  if (
+    typeof warningAngle === "number" &&
+    Number.isFinite(warningAngle)
+  ) {
     device.warningAngle = warningAngle;
   }
 
-  if (typeof badAngle === "number") {
+  if (
+    typeof badAngle === "number" &&
+    Number.isFinite(badAngle)
+  ) {
     device.badAngle = badAngle;
   }
 
-  if (typeof criticalAngle === "number") {
+  if (
+    typeof criticalAngle === "number" &&
+    Number.isFinite(criticalAngle)
+  ) {
     device.criticalAngle = criticalAngle;
   }
 
   res.json({
     ok: true,
-    message: "Parametrler yenilendi",
     device: device
   });
 });
 
-// ESP8266 posture göndərir
-app.post("/api/posture", (req, res) => {
-
-  const {
-    deviceId,
-    pitch
-  } = req.body;
-
-  if (!deviceId || typeof pitch !== "number") {
-    return res.status(400).json({
-      ok: false,
-      error: "deviceId ve pitch teleb olunur"
-    });
-  }
-
-  const device = getDevice(deviceId);
-
-  if (!device.calibrated) {
-    return res.json({
-      ok: true,
-      calibrated: false,
-      status: "not_calibrated"
-    });
-  }
-
-  const deviation =
-    Math.abs(device.normalPitch - pitch);
-
-  let status = "good";
-  let speak = false;
-  let message = "";
-
-  if (deviation >= device.criticalAngle) {
-
-    status = "critical";
-    speak = true;
-    message = "Xahiş edirəm, düzgün oturun.";
-
-  } else if (deviation >= device.badAngle) {
-
-    status = "bad";
-    speak = true;
-    message = "Xahiş edirəm, düzgün oturun.";
-
-  } else if (deviation >= device.warningAngle) {
-
-    status = "warning";
-  }
-
-  device.status = status;
-
-  res.json({
-    ok: true,
-    calibrated: true,
-    status: status,
-    pitch: pitch,
-    normalPitch: device.normalPitch,
-    deviation: deviation,
-    speak: speak,
-    message: message
-  });
-});
+// =====================================================
+// START SERVER
+// =====================================================
 
 app.listen(PORT, () => {
-  console.log(`AI Posture API running on port ${PORT}`);
+
+  console.log(
+    `AI Posture API running on port ${PORT}`
+  );
+
 });

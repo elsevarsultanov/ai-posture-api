@@ -8,25 +8,12 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-// Müvəqqəti yaddaş.
-// Sonrakı mərhələdə bunu database ilə dəyişə bilərik.
 const devices = {};
 
-app.get("/", (req, res) => {
-  res.json({
-    ok: true,
-    service: "AI Posture API",
-    version: "1.0.0"
-  });
-});
-
-// Cihazın vəziyyətini əldə et
-app.get("/api/device/:deviceId", (req, res) => {
-  const { deviceId } = req.params;
-
+function getDevice(deviceId) {
   if (!devices[deviceId]) {
     devices[deviceId] = {
-      deviceId,
+      deviceId: deviceId,
       calibrated: false,
       normalPitch: null,
       warningAngle: 10,
@@ -36,14 +23,32 @@ app.get("/api/device/:deviceId", (req, res) => {
     };
   }
 
+  return devices[deviceId];
+}
+
+// TEST
+app.get("/", (req, res) => {
   res.json({
     ok: true,
-    device: devices[deviceId]
+    service: "AI Posture API",
+    version: "1.0.0"
   });
 });
 
-// Kalibrasiya nəticəsini yadda saxla
+// ESP8266 bu endpoint-i çağırır
+app.get("/api/device/:deviceId", (req, res) => {
+
+  const device = getDevice(req.params.deviceId);
+
+  res.status(200).json({
+    ok: true,
+    device: device
+  });
+});
+
+// Kalibrasiya
 app.post("/api/calibration", (req, res) => {
+
   const {
     deviceId,
     normalPitch
@@ -56,26 +61,22 @@ app.post("/api/calibration", (req, res) => {
     });
   }
 
-  devices[deviceId] = {
-    ...(devices[deviceId] || {}),
-    deviceId,
-    calibrated: true,
-    normalPitch,
-    warningAngle: 10,
-    badAngle: 15,
-    criticalAngle: 20,
-    status: "ready"
-  };
+  const device = getDevice(deviceId);
+
+  device.calibrated = true;
+  device.normalPitch = normalPitch;
+  device.status = "ready";
 
   res.json({
     ok: true,
     message: "Duzgun oturus yadda saxlanildi",
-    device: devices[deviceId]
+    device: device
   });
 });
 
 // Parametrləri dəyiş
 app.post("/api/settings", (req, res) => {
+
   const {
     deviceId,
     warningAngle,
@@ -90,39 +91,30 @@ app.post("/api/settings", (req, res) => {
     });
   }
 
-  if (!devices[deviceId]) {
-    devices[deviceId] = {
-      deviceId,
-      calibrated: false,
-      normalPitch: null,
-      warningAngle: 10,
-      badAngle: 15,
-      criticalAngle: 20,
-      status: "not_calibrated"
-    };
-  }
+  const device = getDevice(deviceId);
 
   if (typeof warningAngle === "number") {
-    devices[deviceId].warningAngle = warningAngle;
+    device.warningAngle = warningAngle;
   }
 
   if (typeof badAngle === "number") {
-    devices[deviceId].badAngle = badAngle;
+    device.badAngle = badAngle;
   }
 
   if (typeof criticalAngle === "number") {
-    devices[deviceId].criticalAngle = criticalAngle;
+    device.criticalAngle = criticalAngle;
   }
 
   res.json({
     ok: true,
     message: "Parametrler yenilendi",
-    device: devices[deviceId]
+    device: device
   });
 });
 
-// ESP8266-dan cari posture məlumatı
+// ESP8266 posture göndərir
 app.post("/api/posture", (req, res) => {
+
   const {
     deviceId,
     pitch
@@ -135,14 +127,7 @@ app.post("/api/posture", (req, res) => {
     });
   }
 
-  const device = devices[deviceId];
-
-  if (!device) {
-    return res.status(404).json({
-      ok: false,
-      error: "Cihaz tapilmadi"
-    });
-  }
+  const device = getDevice(deviceId);
 
   if (!device.calibrated) {
     return res.json({
@@ -152,37 +137,41 @@ app.post("/api/posture", (req, res) => {
     });
   }
 
-  const deviation = Math.abs(device.normalPitch - pitch);
+  const deviation =
+    Math.abs(device.normalPitch - pitch);
 
   let status = "good";
   let speak = false;
   let message = "";
 
   if (deviation >= device.criticalAngle) {
+
     status = "critical";
     speak = true;
     message = "Xahiş edirəm, düzgün oturun.";
+
   } else if (deviation >= device.badAngle) {
+
     status = "bad";
     speak = true;
     message = "Xahiş edirəm, düzgün oturun.";
+
   } else if (deviation >= device.warningAngle) {
+
     status = "warning";
   }
 
   device.status = status;
-  device.lastPitch = pitch;
-  device.deviation = deviation;
 
   res.json({
     ok: true,
     calibrated: true,
-    status,
-    pitch,
+    status: status,
+    pitch: pitch,
     normalPitch: device.normalPitch,
-    deviation,
-    speak,
-    message
+    deviation: deviation,
+    speak: speak,
+    message: message
   });
 });
 
